@@ -8513,10 +8513,16 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebas
         });
     });
 
-    // ----- MODAL CADASTRO RÁPIDO DE FORNECEDOR (ABERTO A PARTIR DO CAMPO CNPJ NA ABA 7) -----
+    // ----- MODAL CADASTRO RÁPIDO DE FORNECEDOR (ABERTO A PARTIR DO CAMPO CNPJ NA ABA 7 OU NA ABA 8) -----
     setupModalEvents(null, 'modal-cadastro-rapido-fornecedor', 'close-modal-cadastro-rapido-fornecedor');
 
-    function abrirModalCadastroRapidoFornecedor(cnpjDigitado) {
+    // IDs dos campos de CNPJ/Nome que devem ser preenchidos (ou limpos, se o usuário cancelar) quando
+    // o cadastro rápido terminar - trocado dinamicamente conforme de onde o modal foi aberto, pra
+    // reaproveitar o mesmo modal tanto na Aba 7 (Nova Compra) quanto na Aba 8 (Novo Pedido de Compra).
+    let cadastroRapidoFornecedorAlvo = { cnpjInputId: 'compra-fornecedor-cnpj', nomeInputId: 'compra-fornecedor-nome' };
+
+    function abrirModalCadastroRapidoFornecedor(cnpjDigitado, alvo) {
+        cadastroRapidoFornecedorAlvo = alvo || { cnpjInputId: 'compra-fornecedor-cnpj', nomeInputId: 'compra-fornecedor-nome' };
         document.getElementById('rapido-fornecedor-cnpj').value = cnpjDigitado;
         // Se o CNPJ veio de uma nota importada em PDF, já sugere a Razão Social dela como nome
         document.getElementById('rapido-fornecedor-nome').value = notaFiscalImportadaAtual ? (notaFiscalImportadaAtual.razaoSocial || '') : '';
@@ -8525,10 +8531,11 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebas
     }
 
     document.getElementById('close-modal-cadastro-rapido-fornecedor').addEventListener('click', () => {
-        // Se o usuário cancelar o cadastro rápido, limpa o CNPJ da compra para forçar uma nova tentativa
-        document.getElementById('compra-fornecedor-cnpj').value = '';
-        document.getElementById('compra-fornecedor-nome').value = '';
-        document.getElementById('compra-fornecedor-cnpj').dataset.fornecedorKey = '';
+        // Se o usuário cancelar o cadastro rápido, limpa o CNPJ do formulário de origem para forçar uma nova tentativa
+        const cnpjEl = document.getElementById(cadastroRapidoFornecedorAlvo.cnpjInputId);
+        const nomeEl = document.getElementById(cadastroRapidoFornecedorAlvo.nomeInputId);
+        if (cnpjEl) { cnpjEl.value = ''; cnpjEl.dataset.fornecedorKey = ''; }
+        if (nomeEl) nomeEl.value = '';
     });
 
     document.getElementById('form-cadastro-rapido-fornecedor').addEventListener('submit', (e) => {
@@ -8539,10 +8546,11 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebas
         if (!digits || !nome) return;
         if (findFornecedorPorCnpj(digits)) { showAlert('Já existe um fornecedor cadastrado com este CNPJ.', 'warning'); return; }
         const novoRef = push(ref(db, 'fornecedores'));
-        set(novoRef, { name: nome, cnpj: cnpjDigitado }).then(() => {
-            document.getElementById('compra-fornecedor-cnpj').value = cnpjDigitado;
-            document.getElementById('compra-fornecedor-nome').value = nome;
-            document.getElementById('compra-fornecedor-cnpj').dataset.fornecedorKey = novoRef.key;
+        set(novoRef, { name: nome, cnpj: digits }).then(() => {
+            const cnpjEl = document.getElementById(cadastroRapidoFornecedorAlvo.cnpjInputId);
+            const nomeEl = document.getElementById(cadastroRapidoFornecedorAlvo.nomeInputId);
+            if (cnpjEl) { cnpjEl.value = formatCnpj(digits); cnpjEl.dataset.fornecedorKey = novoRef.key; }
+            if (nomeEl) nomeEl.value = nome;
             document.getElementById('modal-cadastro-rapido-fornecedor').style.display = 'none';
             document.getElementById('form-cadastro-rapido-fornecedor').reset();
             showAlert(`Fornecedor "${nome}" cadastrado com sucesso! Pode continuar preenchendo a compra.`, 'success');
@@ -10416,7 +10424,32 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebas
         if (match) document.getElementById('pedido-compra-fornecedor-nome').value = match[1].name;
     }
     document.getElementById('pedido-compra-fornecedor-cnpj').addEventListener('input', tentarAutofillFornecedorPorCnpj);
-    document.getElementById('pedido-compra-fornecedor-cnpj').addEventListener('blur', tentarAutofillFornecedorPorCnpj);
+
+    // Ao sair do campo (Tab) ou apertar Enter com os 14 dígitos completos: formata o CNPJ com
+    // pontos/barra/traço automaticamente (o usuário pode digitar só os números ou já formatado, tanto
+    // faz) e, se não achar nenhum fornecedor cadastrado com esse CNPJ, abre o cadastro rápido pra criar
+    // um novo na hora, sem precisar sair do pedido de compra.
+    function finalizarCnpjPedidoCompra() {
+        const cnpjInput = document.getElementById('pedido-compra-fornecedor-cnpj');
+        const nomeInput = document.getElementById('pedido-compra-fornecedor-nome');
+        const digits = normalizeCnpj(cnpjInput.value);
+        if (digits.length !== 14) return;
+        cnpjInput.value = formatCnpj(digits);
+        const match = findFornecedorPorCnpj(digits);
+        if (match) {
+            nomeInput.value = match[1].name;
+        } else {
+            nomeInput.value = '';
+            abrirModalCadastroRapidoFornecedor(cnpjInput.value, { cnpjInputId: 'pedido-compra-fornecedor-cnpj', nomeInputId: 'pedido-compra-fornecedor-nome' });
+        }
+    }
+    document.getElementById('pedido-compra-fornecedor-cnpj').addEventListener('blur', finalizarCnpjPedidoCompra);
+    document.getElementById('pedido-compra-fornecedor-cnpj').addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault(); // evita que o Enter dispare o envio do pedido de compra inteiro ainda incompleto
+        finalizarCnpjPedidoCompra();
+        document.getElementById('pedido-compra-fornecedor-nome').focus();
+    });
 
     // Busca por NOME: mostra um dropdown com todos os fornecedores cujo nome bate com o que foi
     // digitado, exibindo o CNPJ de cada um pra desambiguar - selecionar preenche os dois campos.
