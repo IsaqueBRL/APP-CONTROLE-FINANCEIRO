@@ -1,4 +1,4 @@
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
     import { getDatabase, ref, set, push, onValue, onChildAdded, onChildChanged, onChildRemoved, remove, update, runTransaction } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
     const firebaseConfig = {
@@ -1643,8 +1643,75 @@
         const select = document.getElementById('estoque-individual-select');
         select.innerHTML = Object.keys(allLoadedProducts).map(key => `<option value="${key}">${allLoadedProducts[key].name}</option>`).join('');
         if (select.options.length > 0) renderLocaisAjusteIndividual(select.value);
+        limparSelecaoEstoqueMassa();
         renderListaMassaEstoque();
     }
+
+    // ===== AJUSTE DE ESTOQUE EM MASSA (só os produtos escolhidos via busca aparecem para editar) =====
+    let selectedProdutosEstoqueMassa = new Set();
+
+    function limparSelecaoEstoqueMassa() {
+        selectedProdutosEstoqueMassa = new Set();
+        const inputBusca = document.getElementById('estoque-massa-busca');
+        const btnLimpar = document.getElementById('btn-limpar-busca-estoque-massa');
+        const resultados = document.getElementById('estoque-massa-resultados-busca');
+        if (inputBusca) inputBusca.value = '';
+        if (btnLimpar) btnLimpar.style.display = 'none';
+        if (resultados) { resultados.innerHTML = ''; resultados.style.display = 'none'; }
+    }
+
+    function renderResultadosBuscaEstoqueMassa() {
+        const inputBusca = document.getElementById('estoque-massa-busca');
+        const container = document.getElementById('estoque-massa-resultados-busca');
+        if (!inputBusca || !container) return;
+        const termoOriginal = inputBusca.value;
+        const termo = normalizarBusca(termoOriginal);
+        container.innerHTML = '';
+        if (!termo) { container.style.display = 'none'; return; }
+
+        const encontrados = Object.keys(allLoadedProducts).filter(key => normalizarBusca(allLoadedProducts[key].name).includes(termo));
+        if (encontrados.length === 0) {
+            container.innerHTML = `<div style="padding:10px; text-align:center; color:var(--text-muted); font-size:9pt;">Nenhum produto encontrado para "${termoOriginal}".</div>`;
+            container.style.display = 'block';
+            return;
+        }
+        encontrados.forEach(key => {
+            const prod = allLoadedProducts[key];
+            const jaSelecionado = selectedProdutosEstoqueMassa.has(key);
+            const item = document.createElement('div');
+            item.className = 'transfer-massa-busca-item';
+            item.innerHTML = `
+                <span>${prod.name}</span>
+                <button type="button" class="btn-massa-busca-add" data-key="${key}" ${jaSelecionado ? 'disabled' : ''}>${jaSelecionado ? '✓ Adicionado' : '+ Adicionar'}</button>
+            `;
+            container.appendChild(item);
+        });
+        container.style.display = 'block';
+        container.querySelectorAll('.btn-massa-busca-add').forEach(btn => {
+            btn.addEventListener('click', () => {
+                selectedProdutosEstoqueMassa.add(btn.getAttribute('data-key'));
+                renderListaMassaEstoque();
+                renderResultadosBuscaEstoqueMassa();
+            });
+        });
+    }
+
+    document.getElementById('estoque-massa-busca').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            renderResultadosBuscaEstoqueMassa();
+        }
+    });
+    document.getElementById('estoque-massa-busca').addEventListener('input', (e) => {
+        document.getElementById('btn-limpar-busca-estoque-massa').style.display = e.target.value ? 'flex' : 'none';
+    });
+    document.getElementById('btn-limpar-busca-estoque-massa').addEventListener('click', () => {
+        document.getElementById('estoque-massa-busca').value = '';
+        document.getElementById('btn-limpar-busca-estoque-massa').style.display = 'none';
+        const resultados = document.getElementById('estoque-massa-resultados-busca');
+        resultados.innerHTML = '';
+        resultados.style.display = 'none';
+    });
 
     function renderLocaisAjusteIndividual(prodKey) {
         const container = document.getElementById('estoque-individual-locais-lista');
@@ -1667,17 +1734,47 @@
     function renderListaMassaEstoque() {
         const localSelecionado = document.getElementById('estoque-massa-local').value;
         const listaMassa = document.getElementById('estoque-massa-lista');
+
+        // Preserva os valores já digitados ao re-renderizar (ex: ao trocar o local ou adicionar mais itens)
+        const valoresAtuais = {};
+        listaMassa.querySelectorAll('.massa-estoque-input').forEach(inp => { valoresAtuais[inp.getAttribute('data-key')] = inp.value; });
+
         listaMassa.innerHTML = '';
+
+        // Remove da seleção produtos que não existem mais no catálogo
+        Array.from(selectedProdutosEstoqueMassa).forEach(key => {
+            if (!allLoadedProducts[key]) selectedProdutosEstoqueMassa.delete(key);
+        });
+
         if (!localSelecionado) return;
-        Object.keys(allLoadedProducts).forEach(key => {
+
+        if (selectedProdutosEstoqueMassa.size === 0) {
+            listaMassa.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:20px 8px; font-size:9pt;">Use o campo de busca acima para escolher os produtos que deseja ajustar.</div>`;
+            return;
+        }
+
+        selectedProdutosEstoqueMassa.forEach(key => {
             const prod = allLoadedProducts[key];
+            const atual = getEstoqueNoLocal(prod, localSelecionado);
             const row = document.createElement('div');
-            row.className = 'form-group';
+            row.className = 'transfer-massa-linha';
             row.innerHTML = `
-                <label>${prod.name}</label>
-                <input type="number" step="any" class="massa-estoque-input" data-key="${key}" value="${getEstoqueNoLocal(prod, localSelecionado)}">
+                <div class="transfer-massa-info">
+                    <span class="transfer-massa-nome">${prod.name}</span>
+                    <span class="transfer-massa-disponivel">Estoque atual: ${formatQuantidade(atual)} un.</span>
+                </div>
+                <input type="number" step="any" class="massa-estoque-input" data-key="${key}" value="${valoresAtuais[key] !== undefined ? valoresAtuais[key] : atual}">
+                <button type="button" class="btn-massa-remover" data-key="${key}" title="Remover da lista">✕</button>
             `;
             listaMassa.appendChild(row);
+        });
+
+        listaMassa.querySelectorAll('.btn-massa-remover').forEach(btn => {
+            btn.addEventListener('click', () => {
+                selectedProdutosEstoqueMassa.delete(btn.getAttribute('data-key'));
+                renderListaMassaEstoque();
+                renderResultadosBuscaEstoqueMassa();
+            });
         });
     }
 
@@ -2030,12 +2127,13 @@
         const quantity = parseFloat(document.getElementById('add-insumo-qty').value) || 0;
         const price = parseFloat(document.getElementById('add-insumo-price').value) || 0;
         const estoqueMinimo = parseFloat(document.getElementById('add-insumo-estoque-minimo').value) || 0;
+        const naoEhMateriaPrima = document.getElementById('add-insumo-nao-materia-prima').checked;
 
         if(!name) return;
 
         const codigoInterno = getNextCodigoInternoInsumo();
         const newRef = push(ref(db, 'suprimentos'));
-        set(newRef, { name, barcode, unit, quantity, price, estoqueMinimo, codigoInterno })
+        set(newRef, { name, barcode, unit, quantity, price, estoqueMinimo, codigoInterno, naoEhMateriaPrima })
         .then(() => {
             showAlert(`Matéria-Prima "${name}" cadastrada com sucesso! Código interno: ${String(codigoInterno).padStart(3,'0')}`, 'success');
             document.getElementById('modal-cadastro-insumo').style.display = 'none';
@@ -2367,6 +2465,7 @@
         document.getElementById('edit-insumo-barcode').value = item.barcode || '';
         document.getElementById('edit-insumo-um').value = item.unit || 'g';
         document.getElementById('edit-insumo-estoque-minimo').value = parseFloat(item.estoqueMinimo || 0);
+        document.getElementById('edit-insumo-nao-materia-prima').checked = !!item.naoEhMateriaPrima;
         document.getElementById('modal-editar-insumo').style.display = 'flex';
     };
 
@@ -2377,11 +2476,13 @@
         const barcode = document.getElementById('edit-insumo-barcode').value.trim();
         const um = document.getElementById('edit-insumo-um').value;
         const estoqueMinimo = parseFloat(document.getElementById('edit-insumo-estoque-minimo').value) || 0;
+        const naoEhMateriaPrima = document.getElementById('edit-insumo-nao-materia-prima').checked;
 
         set(ref(db, `suprimentos/${key}/name`), name);
         set(ref(db, `suprimentos/${key}/barcode`), barcode);
         set(ref(db, `suprimentos/${key}/unit`), um);
         set(ref(db, `suprimentos/${key}/estoqueMinimo`), estoqueMinimo);
+        set(ref(db, `suprimentos/${key}/naoEhMateriaPrima`), naoEhMateriaPrima);
 
         document.getElementById('modal-editar-insumo').style.display = 'none';
         showAlert("Dados cadastrais do insumo atualizados.", 'success');
@@ -3310,7 +3411,7 @@
                 const estoqueMinimo = parseFloat(data[key].estoqueMinimo || 0);
                 const quantity = parseFloat(data[key].quantity || 0);
                 const baixoEstoque = estoqueMinimo > 0 && quantity < estoqueMinimo;
-                return { key, codigoInterno: parseInt(data[key].codigoInterno) || 0, name: data[key].name, barcode: data[key].barcode || '', price: parseFloat(data[key].price || 0), quantity, unit: data[key].unit || 'g', estoqueMinimo, baixoEstoque };
+                return { key, codigoInterno: parseInt(data[key].codigoInterno) || 0, name: data[key].name, barcode: data[key].barcode || '', price: parseFloat(data[key].price || 0), quantity, unit: data[key].unit || 'g', estoqueMinimo, baixoEstoque, naoEhMateriaPrima: !!data[key].naoEhMateriaPrima };
             });
 
             // O select de escolha de insumo (usado em outros modais) sempre lista TODOS os suprimentos,
@@ -3330,19 +3431,18 @@
             lista = ordenarPorEstado(lista, 'suprimentos-table');
 
             if (lista.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:var(--text-faint); padding:20px;">Nenhum suprimento encontrado.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:var(--text-faint); padding:20px;">Nenhum suprimento encontrado.</td></tr>';
             }
 
             lista.forEach(sup => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     <td><strong style="color:#0854a0;">${String(sup.codigoInterno).padStart(3,'0')}</strong></td>
-                    <td><strong>${sup.name}</strong></td>
+                    <td>${nomeClicavelInsumo(sup.key, sup.name)}${sup.naoEhMateriaPrima ? ' <span class="badge-status" style="background:var(--bg-header-cell); color:var(--text-muted); font-size:7.5pt; padding:2px 6px;">USO</span>' : ''}</td>
                     <td>${sup.barcode ? sup.barcode : '<span style="color:var(--text-faint);">—</span>'}</td>
                     <td>R$ ${formatMoeda(sup.price)}</td>
                     <td><span class="badge-stock" ${sup.baixoEstoque ? 'style="background:var(--bg-danger-soft); color:var(--color-negative);"' : ''}>${formatQuantidade(sup.quantity)}${sup.baixoEstoque ? ' ' : ''}</span></td>
                     <td><span style="font-weight:600; color:#33465a;">${sup.unit}</span></td>
-                    <td><button class="btn-action-prod btn-edit-prod" onclick="openModalEditarInsumo('${sup.key}')">✏️ Cadastros</button></td>
                     <td><button class="btn-action-prod btn-delete-prod" onclick="excluirInsumoComercial('${sup.key}')">✕ Deletar</button></td>
                 `;
                 tbody.appendChild(tr);
@@ -6556,6 +6656,34 @@
         document.getElementById('detalhe-cliente-credito').innerText = `R$ ${formatMoeda(calcularCreditoCliente(cliente.name))}`;
     }
 
+    // Só permite excluir um cliente que não tenha NENHUMA transação vinculada ao nome dele -
+    // nem venda (de qualquer status) nem lançamento de crédito manual (Aba 5). Sem essa checagem,
+    // excluir um cliente com histórico deixaria vendas antigas "órfãs" (sem cliente cadastrado).
+    window.excluirCliente = function(key) {
+        const cliente = allLoadedClientes[key];
+        if (!cliente) return;
+
+        const nomeLower = cliente.name.toLowerCase();
+        const temTransacao = Object.values(allLoadedSales).some(s => (s.clientName || '').toLowerCase() === nomeLower);
+
+        if (temTransacao) {
+            showAlert('Não é possível excluir este cliente pois ele já tem vendas e/ou transações de crédito vinculadas.', 'danger');
+            return;
+        }
+
+        showConfirm(`Deseja excluir o cliente "${cliente.name}" permanentemente? Essa ação não pode ser desfeita.`, 'danger', 'Excluir Cliente').then(ok => {
+            if (!ok) return;
+            remove(ref(db, `clientes/${key}`)).then(() => {
+                document.getElementById('modal-detalhe-cliente').style.display = 'none';
+                showAlert(`Cliente "${cliente.name}" excluído com sucesso.`, 'success');
+            }).catch(err => showAlert('Erro ao excluir: ' + err.message, 'danger'));
+        });
+    };
+
+    document.getElementById('btn-deletar-cliente').addEventListener('click', () => {
+        if (currentDetalheClienteKey) excluirCliente(currentDetalheClienteKey);
+    });
+
     // Caixinha flutuante do gráfico de compras do cliente (mesmo estilo do gráfico da Aba 4)
     function showDetalheClienteTooltip(evt, ponto) {
         const wrapper = document.getElementById('detalhe-cliente-chart-svg').closest('.card');
@@ -8853,8 +8981,10 @@
         div.id = rowId;
         div.style.cssText = 'display:flex; gap:8px; align-items:flex-end; margin-bottom:8px; flex-wrap:wrap; background:var(--bg-soft); padding:8px; border-radius: 3px;';
 
-        // Envolve o seletor de insumo + a alternativa "não é matéria-prima" numa coluna só, pra poder
-        // trocar entre os dois sem bagunçar o alinhamento das outras colunas (qtd, custo, subtotal).
+        // Envolve o seletor de insumo + o aviso "material de uso" numa coluna só, pra poder mostrar o
+        // aviso sem bagunçar o alinhamento das outras colunas (qtd, custo, subtotal). O insumo já traz
+        // consigo a informação "é matéria-prima ou material de uso" (cadastrada na Aba 3), então aqui
+        // só exibimos esse status - não precisa mais de checkbox nem de descrição manual por item.
         const selectWrapper = document.createElement('div');
         selectWrapper.style.cssText = 'flex:2 1 160px; display:flex; flex-direction:column; gap:4px;';
 
@@ -8864,27 +8994,13 @@
         selectInsumo.innerHTML = '<option value="">-- Selecione o Insumo --</option>' +
             Object.keys(allLoadedSuprimentos).map(key => `<option value="${key}">${allLoadedSuprimentos[key].name}</option>`).join('');
 
-        // Usada só quando "não é matéria-prima" está marcado - mesma classe usada nos itens importados
-        // de nota (.item-compra-descricao-nota), pra alimentar o nome do item ao salvar a compra sem
-        // precisar duplicar lógica de leitura no momento de confirmar.
-        const inputDescManual = document.createElement('input');
-        inputDescManual.type = 'text';
-        inputDescManual.className = 'item-compra-descricao-nota';
-        inputDescManual.placeholder = 'Descrição do item comprado';
-        inputDescManual.style.cssText = 'width:100%; margin:0; display:none;';
-
-        const labelSemEstoque = document.createElement('label');
-        labelSemEstoque.style.cssText = 'display:flex; align-items:center; gap:5px; font-size:7.8pt; color:var(--text-muted); cursor:pointer;';
-        const inputSemEstoque = document.createElement('input');
-        inputSemEstoque.type = 'checkbox';
-        inputSemEstoque.className = 'item-compra-sem-estoque';
-        inputSemEstoque.style.cssText = 'margin:0; cursor:pointer;';
-        labelSemEstoque.appendChild(inputSemEstoque);
-        labelSemEstoque.appendChild(document.createTextNode('Não é matéria-prima (não dá entrada em estoque)'));
+        const avisoMaterialUso = document.createElement('span');
+        avisoMaterialUso.className = 'item-compra-aviso-material-uso';
+        avisoMaterialUso.style.cssText = 'display:none; font-size:7.8pt; color:#085caf; font-weight:600;';
+        avisoMaterialUso.innerText = 'Material de uso - não dá entrada em estoque';
 
         selectWrapper.appendChild(selectInsumo);
-        selectWrapper.appendChild(inputDescManual);
-        selectWrapper.appendChild(labelSemEstoque);
+        selectWrapper.appendChild(avisoMaterialUso);
 
         const inputQtd = document.createElement('input');
         inputQtd.type = 'number'; inputQtd.min = '0.0001'; inputQtd.step = 'any'; inputQtd.placeholder = 'Qtd.';
@@ -8926,16 +9042,8 @@
         selectInsumo.addEventListener('change', () => {
             const insumo = allLoadedSuprimentos[selectInsumo.value];
             inputCusto.value = insumo ? parseFloat(insumo.price || 0).toFixed(2) : '';
+            avisoMaterialUso.style.display = (insumo && insumo.naoEhMateriaPrima) ? 'block' : 'none';
             recalcularSubtotalItem();
-        });
-
-        // Alterna entre "vincular a um insumo cadastrado" (normal, dá entrada em estoque) e "item de
-        // uso/material que não é matéria-prima" (só descrição livre, não mexe em estoque nenhum).
-        inputSemEstoque.addEventListener('change', () => {
-            const semEstoque = inputSemEstoque.checked;
-            selectInsumo.style.display = semEstoque ? 'none' : '';
-            inputDescManual.style.display = semEstoque ? '' : 'none';
-            if (semEstoque) { selectInsumo.value = ''; } else { inputDescManual.value = ''; }
         });
 
         function recalcularSubtotalItem() {
@@ -9350,19 +9458,6 @@
 
         const descStatus = document.createElement('div');
 
-        // Checkbox pra itens que vêm na mesma nota mas não são matéria-prima (ex.: jarra, guardanapo,
-        // organizador) - permite registrar o item na compra (valor, histórico) sem exigir cadastro de
-        // insumo nem dar entrada em estoque.
-        const labelSemEstoque = document.createElement('label');
-        labelSemEstoque.style.cssText = 'display:flex; align-items:center; gap:5px; font-size:7.8pt; color:var(--text-muted); cursor:pointer; margin-top:2px;';
-        const inputSemEstoque = document.createElement('input');
-        inputSemEstoque.type = 'checkbox';
-        inputSemEstoque.className = 'item-compra-sem-estoque';
-        inputSemEstoque.style.cssText = 'margin:0; cursor:pointer;';
-        labelSemEstoque.appendChild(inputSemEstoque);
-        labelSemEstoque.appendChild(document.createTextNode('Não é matéria-prima (não dá entrada em estoque)'));
-        inputSemEstoque.addEventListener('change', () => renderDescArea());
-
         const inputEan = document.createElement('input');
         inputEan.type = 'text';
         inputEan.readOnly = true;
@@ -9475,7 +9570,8 @@
             // receber um addEventListener. O clique parava de funcionar exatamente nos itens duplicados,
             // porque o botão visível na tela já não era mais o mesmo elemento que tinha o listener.
             let html = '';
-            if (inputSemEstoque.checked) {
+            const insumoVinculado = inputInsumoKey.value ? allLoadedSuprimentos[inputInsumoKey.value] : null;
+            if (insumoVinculado && insumoVinculado.naoEhMateriaPrima) {
                 html = `<span style="font-size:8pt; color:#085caf;">Material de uso - será registrado nesta compra, sem dar entrada em estoque</span>`;
             } else if (inputInsumoKey.value) {
                 html = `<span style="font-size:8pt; color:var(--color-positive);">${matched && matched[0] === inputInsumoKey.value ? 'Produto cadastrado' : 'Cadastrado agora'}</span>`;
@@ -9493,7 +9589,7 @@
             }
             descStatus.innerHTML = html;
 
-            if (!inputSemEstoque.checked && !inputInsumoKey.value) {
+            if (!inputInsumoKey.value) {
                 descStatus.querySelector('.btn-cadastrar-insumo-pdf').addEventListener('click', () => {
                     cadastrarInsumoRapidoDoPdf(itemPdf, selectUm.value).then(novoKey => {
                         inputInsumoKey.value = novoKey;
@@ -9607,7 +9703,6 @@
 
         descWrapper.appendChild(inputDescricao);
         descWrapper.appendChild(descStatus);
-        descWrapper.appendChild(labelSemEstoque);
 
         div.appendChild(inputItemNum);
         div.appendChild(descWrapper);
@@ -9875,8 +9970,6 @@
         const itens = [];
         let itemInvalido = false;
         document.querySelectorAll('#compra-itens-lista .linha-item-compra').forEach(row => {
-            const semEstoqueEl = row.querySelector('.item-compra-sem-estoque');
-            const semEstoque = !!(semEstoqueEl && semEstoqueEl.checked);
             const insumoKey = row.querySelector('.item-compra-insumo').value;
             const descricaoNotaEl = row.querySelector('.item-compra-descricao-nota');
             const eanNotaEl = row.querySelector('.item-compra-ean-nota');
@@ -9897,25 +9990,17 @@
                 return;
             }
 
-            if (semEstoque) {
-                // Item marcado como "não é matéria-prima": não precisa de insumo cadastrado nem de EAN -
-                // só exige uma descrição pra identificar o que foi comprado no histórico da compra.
-                if (!descricaoNota) { itemInvalido = true; return; }
-                itens.push({
-                    insumoKey: null, insumoNome: descricaoNota, unidade: umNota || '',
-                    quantidade, custoUnitario, unitarioBruto, descontoValor, descontoTipo, descontoUnitario,
-                    subtotal, descricaoNota, eanNota, umNota, semEstoque: true
-                });
-                return;
-            }
-
             if (!insumoKey) { itemInvalido = true; return; }
             const insumo = allLoadedSuprimentos[insumoKey];
             if (!insumo) { itemInvalido = true; return; }
+            // "Não é matéria-prima" agora é uma propriedade do próprio insumo (cadastrada na Aba 3),
+            // não mais uma escolha feita a cada compra - se o insumo estiver marcado assim, o item
+            // é automaticamente registrado só no histórico da compra, sem dar entrada em estoque.
+            const semEstoque = !!insumo.naoEhMateriaPrima;
             itens.push({
                 insumoKey, insumoNome: descricaoNota || insumo.name, unidade: umNota || insumo.unit || '',
                 quantidade, custoUnitario, unitarioBruto, descontoValor, descontoTipo, descontoUnitario,
-                subtotal, descricaoNota, eanNota, umNota, semEstoque: false
+                subtotal, descricaoNota, eanNota, umNota, semEstoque
             });
         });
 
